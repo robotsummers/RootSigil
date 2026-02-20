@@ -51,7 +51,7 @@
     "light-my-request": "^6.6.0",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4",
-    "vitest": "^2.0.5"
+    "vitest": "^4.0.18"
   },
   "optionalDependencies": {
     "bufferutil": "4.0.9",
