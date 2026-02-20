@@ -1,8 +1,10 @@
 node_modules/
 dist/
+.DS_Store
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
 .artifacts/
 .env
+rootsigil-codex-handoff/
 docs/

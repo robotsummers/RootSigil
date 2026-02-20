@@ -9,6 +9,7 @@ import inject from "light-my-request";
 import { buildApp } from "../src/app.js";
 import type { AppConfig } from "../src/config.js";
 import { openDb, type SqliteDb } from "../src/db/db.js";
+import { signAttestation } from "../src/lib/attestation.js";
 import { loadPolicyFromFile } from "../src/lib/policy.js";
 
 if (!(globalThis as any).crypto) {
@@ -147,6 +148,57 @@ describe("api integration", () => {
     expect(Array.isArray(verify.body.errors)).toBe(true);
   });
 
+  test("verify enforces pinned issuer key unless allow_unpinned_issuer=true", async () => {
+    const scan = await jsonRequest(fixture.app, {
+      method: "POST",
+      url: "/v1/scan",
+      payload: { inline: { content: "verify issuer pinning" } }
+    });
+    expect(scan.statusCode).toBe(200);
+
+    const attest = await jsonRequest(fixture.app, {
+      method: "POST",
+      url: "/v1/attest",
+      payload: {
+        scan_id: scan.body.scan_id,
+        token: scan.body.result_token
+      }
+    });
+    expect(attest.statusCode).toBe(200);
+
+    const altSk = Buffer.alloc(32, 13);
+    const altPk = await getPublicKeyAsync(altSk);
+    const tamperedDoc = {
+      ...attest.body.attestation_document,
+      issuer: {
+        ...attest.body.attestation_document.issuer,
+        public_key: Buffer.from(altPk).toString("base64")
+      }
+    };
+    const altSigned = await signAttestation(tamperedDoc, Buffer.from(altSk).toString("base64"));
+
+    const pinned = await jsonRequest(fixture.app, {
+      method: "POST",
+      url: "/v1/verify",
+      payload: altSigned
+    });
+    expect(pinned.statusCode).toBe(200);
+    expect(pinned.body.valid_signature).toBe(false);
+    expect(Array.isArray(pinned.body.errors)).toBe(true);
+    expect(String(pinned.body.errors.join(" "))).toMatch(/pinned issuer/i);
+
+    const unpinned = await jsonRequest(fixture.app, {
+      method: "POST",
+      url: "/v1/verify",
+      payload: {
+        ...altSigned,
+        allow_unpinned_issuer: true
+      }
+    });
+    expect(unpinned.statusCode).toBe(200);
+    expect(unpinned.body.valid_signature).toBe(true);
+  });
+
   test("attest idempotency replay + conflict", async () => {
     const scanA = await jsonRequest(fixture.app, { method: "POST", url: "/v1/scan", payload: { inline: { content: "scan A" } } });
     const scanB = await jsonRequest(fixture.app, { method: "POST", url: "/v1/scan", payload: { inline: { content: "scan B" } } });
@@ -194,6 +246,20 @@ describe("api integration", () => {
     expect(typeof res.body.revocations_document.issuer.public_key).toBe("string");
     expect(res.body.revocations_document.issuer.algorithm).toBe("ed25519");
     expect(Array.isArray(res.body.revocations_document.revocations)).toBe(true);
+
+    const issuer = await jsonRequest(fixture.app, { method: "GET", url: "/v1/issuer" });
+    expect(issuer.statusCode).toBe(200);
+    expect(typeof issuer.body.issuer_id).toBe("string");
+    expect(typeof issuer.body.issuer_public_key_b64).toBe("string");
+    expect(typeof issuer.body.network).toBe("string");
+    expect(typeof issuer.body.payto).toBe("string");
+    expect(typeof issuer.body.prices?.scan).toBe("string");
+    expect(typeof issuer.body.prices?.attest).toBe("string");
+
+    const version = await jsonRequest(fixture.app, { method: "GET", url: "/v1/version" });
+    expect(version.statusCode).toBe(200);
+    expect(typeof version.body.version).toBe("string");
+    expect(typeof version.body.policy_version).toBe("string");
   });
 });
 
@@ -226,7 +292,10 @@ async function createFixture(): Promise<Fixture> {
 
   fs.mkdirSync(config.ARTIFACT_STORAGE_DIR, { recursive: true });
   const db = openDb(config.SQLITE_PATH);
-  db.exec(fs.readFileSync(path.join(process.cwd(), "migrations", "001_init.sql"), "utf8"));
+  const migrationsDir = path.join(process.cwd(), "migrations");
+  for (const file of fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort()) {
+    db.exec(fs.readFileSync(path.join(migrationsDir, file), "utf8"));
+  }
   const policy = loadPolicyFromFile(config.POLICY_FILE);
 
   const noOpMiddleware: RequestHandler = (_req, _res, next) => next();

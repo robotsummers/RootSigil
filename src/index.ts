@@ -6,6 +6,7 @@ import { loadPolicyFromFile } from "./lib/policy.js";
 import { cleanupExpiredArtifacts } from "./lib/retention.js";
 import { buildX402 } from "./payment/x402.js";
 import { buildApp } from "./app.js";
+import { startWorkerLoop } from "./worker/scan-worker.js";
 
 if (!globalThis.crypto) {
   globalThis.crypto = webcrypto as any;
@@ -30,10 +31,16 @@ try {
   console.warn(`Artifact cleanup failed: ${String(e?.message || e)}`);
 }
 const policy = loadPolicyFromFile(config.POLICY_FILE);
-const x402 = buildX402(config);
 
-const app = buildApp({ config, db, policy, x402 });
+if (config.ROOTSIGIL_ROLE === "worker" || config.ROOTSIGIL_ROLE === "all") {
+  startWorkerLoop({ config, db, policy });
+  console.log("RootSigil worker loop started");
+}
 
-app.listen(config.PORT, () => {
-  console.log(`Skill Attestor listening on ${config.BASE_URL}`);
-});
+if (config.ROOTSIGIL_ROLE === "api" || config.ROOTSIGIL_ROLE === "all") {
+  const x402 = buildX402(config);
+  const app = buildApp({ config, db, policy, x402 });
+  app.listen(config.PORT, () => {
+    console.log(`RootSigil API listening on ${config.BASE_URL}`);
+  });
+}

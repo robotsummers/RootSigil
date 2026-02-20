@@ -32,10 +32,20 @@ export interface IntakeLimits {
   max_single_file_bytes: number;
 }
 
+export interface GitIntakeOptions {
+  allowed_hosts: string[];
+  timeout_ms: number;
+}
+
 const DEFAULT_LIMITS: IntakeLimits = {
   max_files: 5000,
   max_total_bytes: 20 * 1024 * 1024,
   max_single_file_bytes: 2 * 1024 * 1024
+};
+
+const DEFAULT_GIT_OPTIONS: GitIntakeOptions = {
+  allowed_hosts: ["github.com"],
+  timeout_ms: 15_000
 };
 
 export function normalizePath(p: string): string {
@@ -100,15 +110,21 @@ export function normalizeZip(input: { zip_bytes_b64: string; entrypoint?: string
 
 export function normalizeGit(
   input: { repo_url: string; ref: string; entrypoint?: string },
-  limits: IntakeLimits = DEFAULT_LIMITS
+  limits: IntakeLimits = DEFAULT_LIMITS,
+  options: Partial<GitIntakeOptions> = {}
 ): NormalizedArtifact {
-  const source = resolveGitFetchSource(input.repo_url);
   const ref = String(input.ref || "").trim();
   if (!ref) throw new Error("git ref is required");
 
+  const gitOptions: GitIntakeOptions = {
+    allowed_hosts: normalizeAllowedHosts(options.allowed_hosts),
+    timeout_ms: options.timeout_ms ?? DEFAULT_GIT_OPTIONS.timeout_ms
+  };
+  const source = resolveGitFetchSource(input.repo_url, gitOptions.allowed_hosts);
+
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "skill-attestor-git-"));
   try {
-    runGit(repoDir, ["init", "--quiet"]);
+    runGit(repoDir, ["init", "--quiet"], gitOptions.timeout_ms);
     const fileProtocolMode = source.allowFileTransport ? "always" : "never";
     runGit(repoDir, [
       "-c",
@@ -121,9 +137,9 @@ export function normalizeGit(
       "1",
       source.fetchRemote,
       ref
-    ]);
+    ], gitOptions.timeout_ms);
 
-    const treeEntries = parseLsTree(runGit(repoDir, ["ls-tree", "-r", "-z", "--long", "FETCH_HEAD"]));
+    const treeEntries = parseLsTree(runGit(repoDir, ["ls-tree", "-r", "-z", "--long", "FETCH_HEAD"], gitOptions.timeout_ms));
     if (treeEntries.length > limits.max_files) throw new Error("Git repo has too many files");
 
     const files: NormalizedFile[] = [];
@@ -141,7 +157,7 @@ export function normalizeGit(
       const normalizedPath = normalizePath(e.path);
       if (e.size > limits.max_single_file_bytes) throw new Error(`Git file is oversized: ${normalizedPath}`);
 
-      const blob = runGitRaw(repoDir, ["cat-file", "-p", e.objectHash]);
+      const blob = runGitRaw(repoDir, ["cat-file", "-p", e.objectHash], gitOptions.timeout_ms);
       if (blob.byteLength > limits.max_single_file_bytes) throw new Error(`Git file is oversized: ${normalizedPath}`);
       total += blob.byteLength;
       if (total > limits.max_total_bytes) throw new Error("Git repo is too large");
@@ -179,6 +195,48 @@ export function computeHashes(input: { entrypoint: string; files: NormalizedFile
   const root_sha256 = sha256HexUtf8(canonical_manifest_json);
 
   return { entrypoint: input.entrypoint, files, manifest, canonical_manifest_json, root_sha256 };
+}
+
+export function loadArtifactFromDisk(args: {
+  artifact_storage_path: string;
+  manifest_json: string;
+  entrypoint: string;
+  expected_root_sha256?: string;
+}): NormalizedArtifact {
+  const storageRoot = path.resolve(args.artifact_storage_path);
+  const manifest = parseManifest(args.manifest_json);
+  const files: NormalizedFile[] = [];
+
+  for (const entry of manifest) {
+    const normalizedPath = normalizePath(entry.path);
+    const resolved = path.resolve(storageRoot, normalizedPath);
+    if (!isPathInsideRoot(storageRoot, resolved)) {
+      throw new Error(`artifact path escapes storage root: ${normalizedPath}`);
+    }
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+      throw new Error(`artifact file missing: ${normalizedPath}`);
+    }
+
+    const bytes = fs.readFileSync(resolved);
+    if (bytes.byteLength !== entry.size_bytes) {
+      throw new Error(`artifact size mismatch for ${normalizedPath}`);
+    }
+    const fileSha = sha256HexBytes(bytes);
+    if (fileSha !== entry.sha256) {
+      throw new Error(`artifact hash mismatch for ${normalizedPath}`);
+    }
+    files.push({ path: normalizedPath, bytes: new Uint8Array(bytes) });
+  }
+
+  const artifact = computeHashes({ entrypoint: normalizePath(args.entrypoint), files });
+  const canonicalManifest = canonicalJson(manifest);
+  if (artifact.canonical_manifest_json !== canonicalManifest) {
+    throw new Error("artifact manifest mismatch");
+  }
+  if (args.expected_root_sha256 && artifact.root_sha256 !== args.expected_root_sha256) {
+    throw new Error("artifact root hash mismatch");
+  }
+  return artifact;
 }
 
 export function extractVirtualFilesFromMarkdown(entryPath: string, markdownUtf8: string): NormalizedFile[] {
@@ -228,7 +286,7 @@ type GitTreeEntry = {
   path: string;
 };
 
-function normalizeHttpsRepoUrl(repoUrl: string): string {
+function normalizeHttpsRepoUrl(repoUrl: string, allowedHosts: string[]): string {
   let parsed: URL;
   try {
     parsed = new URL(repoUrl);
@@ -238,11 +296,15 @@ function normalizeHttpsRepoUrl(repoUrl: string): string {
   if (parsed.protocol !== "https:") {
     throw new Error("git repo_url must use https");
   }
+  const host = parsed.hostname.toLowerCase();
+  if (!allowedHosts.includes(host)) {
+    throw new Error(`GIT_HOST_NOT_ALLOWED: host ${host} is not allowed`);
+  }
   return parsed.toString();
 }
 
-function resolveGitFetchSource(repoUrl: string): { fetchRemote: string; allowFileTransport: boolean } {
-  const normalized = normalizeHttpsRepoUrl(repoUrl);
+function resolveGitFetchSource(repoUrl: string, allowedHosts: string[]): { fetchRemote: string; allowFileTransport: boolean } {
+  const normalized = normalizeHttpsRepoUrl(repoUrl, allowedHosts);
   const fallback = { fetchRemote: normalized, allowFileTransport: false };
 
   if (process.env.NODE_ENV !== "test") return fallback;
@@ -267,21 +329,39 @@ function resolveGitFetchSource(repoUrl: string): { fetchRemote: string; allowFil
   };
 }
 
-function runGit(cwd: string, args: string[]): string {
-  return runGitRaw(cwd, args).toString("utf8");
+function runGit(cwd: string, args: string[], timeoutMs: number): string {
+  return runGitRaw(cwd, args, timeoutMs).toString("utf8");
 }
 
-function runGitRaw(cwd: string, args: string[]): Buffer {
+function runGitRaw(cwd: string, args: string[], timeoutMs: number): Buffer {
   try {
     return execFileSync("git", args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }
     });
   } catch (e: any) {
+    const timeout =
+      e?.code === "ETIMEDOUT" ||
+      (typeof e?.message === "string" && e.message.includes("ETIMEDOUT")) ||
+      (e?.killed === true && e?.signal === "SIGTERM");
+    if (timeout) {
+      throw new Error(`GIT_TIMEOUT: git command exceeded ${timeoutMs}ms`);
+    }
     const stderr = Buffer.isBuffer(e?.stderr) ? e.stderr.toString("utf8").trim() : String(e?.stderr || "").trim();
     throw new Error(stderr || "git command failed");
   }
+}
+
+function normalizeAllowedHosts(allowedHosts: string[] | undefined): string[] {
+  const hosts = (allowedHosts && allowedHosts.length > 0 ? allowedHosts : DEFAULT_GIT_OPTIONS.allowed_hosts)
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
+  if (hosts.length === 0) {
+    throw new Error("GIT_HOST_NOT_ALLOWED: no allowed hosts configured");
+  }
+  return hosts;
 }
 
 function parseLsTree(output: string): GitTreeEntry[] {
@@ -310,6 +390,39 @@ function parseLsTree(output: string): GitTreeEntry[] {
   }
 
   return out;
+}
+
+function parseManifest(manifestJson: string): ArtifactManifestEntry[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(manifestJson);
+  } catch {
+    throw new Error("artifact manifest_json is invalid");
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("artifact manifest_json must be an array");
+  }
+
+  return parsed.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`artifact manifest entry ${index} is invalid`);
+    }
+    const row = item as Record<string, unknown>;
+    if (typeof row.path !== "string" || typeof row.sha256 !== "string" || typeof row.size_bytes !== "number") {
+      throw new Error(`artifact manifest entry ${index} is invalid`);
+    }
+    return {
+      path: row.path,
+      sha256: row.sha256,
+      size_bytes: row.size_bytes
+    };
+  });
+}
+
+function isPathInsideRoot(rootDir: string, candidatePath: string): boolean {
+  const relative = path.relative(rootDir, candidatePath);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 function detectDisallowedZipEntryType(entry: { attr?: number; isDirectory: boolean }): string | null {

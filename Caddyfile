@@ -1,0 +1,15 @@
+# For local dev use:
+#   ROOTSIGIL_HOSTNAME=:8080
+#
+# For production TLS use:
+#   ROOTSIGIL_HOSTNAME=api.example.com
+
+{$ROOTSIGIL_HOSTNAME::8080} {
+  encode gzip
+  reverse_proxy api:8080
+
+  log {
+    output stdout
+    format console
+  }
+}

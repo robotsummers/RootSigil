@@ -192,7 +192,10 @@ async function createFixture(): Promise<Fixture> {
 
   fs.mkdirSync(config.ARTIFACT_STORAGE_DIR, { recursive: true });
   const db = openDb(config.SQLITE_PATH);
-  db.exec(fs.readFileSync(path.join(process.cwd(), "migrations", "001_init.sql"), "utf8"));
+  const migrationsDir = path.join(process.cwd(), "migrations");
+  for (const file of fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort()) {
+    db.exec(fs.readFileSync(path.join(migrationsDir, file), "utf8"));
+  }
   const policy = loadPolicyFromFile(config.POLICY_FILE);
 
   const noOpMiddleware: RequestHandler = (_req, _res, next) => next();

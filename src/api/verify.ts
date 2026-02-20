@@ -10,6 +10,7 @@ import { canonicalJson, sha256HexUtf8 } from "../lib/canonicalJson.js";
 const VerifyRequest = z.object({
   attestation_document: z.object({}).passthrough(),
   signature_b64url: z.string().min(1),
+  allow_unpinned_issuer: z.boolean().optional(),
   artifact_manifest: z
     .array(
       z
@@ -34,20 +35,44 @@ export function buildVerifyRouter(args: { config: AppConfig; db: SqliteDb }): Ro
     }
     const errors: string[] = [];
     const doc = parsed.data.attestation_document as Record<string, unknown>;
+    const allowUnpinnedIssuer = Boolean(parsed.data.allow_unpinned_issuer);
     const docIssuer = asObject(doc.issuer);
-    const issuerPublicKey = typeof docIssuer?.public_key === "string" ? docIssuer.public_key : config.ISSUER_ED25519_PUBLIC_KEY_B64;
+    const docIssuerPublicKey = typeof docIssuer?.public_key === "string" ? docIssuer.public_key : null;
+
+    let verifyKey: string | null = config.ISSUER_ED25519_PUBLIC_KEY_B64 || null;
+    let pinnedIssuerMismatch = false;
+    if (verifyKey) {
+      if (docIssuerPublicKey && docIssuerPublicKey !== verifyKey) {
+        if (allowUnpinnedIssuer) {
+          verifyKey = docIssuerPublicKey;
+        } else {
+          pinnedIssuerMismatch = true;
+          errors.push("attestation issuer public key does not match pinned issuer");
+        }
+      }
+    } else if (docIssuerPublicKey) {
+      if (allowUnpinnedIssuer) {
+        verifyKey = docIssuerPublicKey;
+      } else {
+        errors.push("attestation issuer is unpinned; set allow_unpinned_issuer=true to permit");
+      }
+    } else {
+      errors.push("issuer public key unavailable for verification");
+    }
 
     let validSignature = false;
-    try {
-      validSignature = await verifyAttestation(
-        {
-          attestation_document: parsed.data.attestation_document as any,
-          signature_b64url: parsed.data.signature_b64url
-        },
-        issuerPublicKey
-      );
-    } catch {
-      validSignature = false;
+    if (!pinnedIssuerMismatch && verifyKey) {
+      try {
+        validSignature = await verifyAttestation(
+          {
+            attestation_document: parsed.data.attestation_document as any,
+            signature_b64url: parsed.data.signature_b64url
+          },
+          verifyKey
+        );
+      } catch {
+        validSignature = false;
+      }
     }
     if (!validSignature) errors.push("invalid signature");
 

@@ -100,6 +100,33 @@ describe("artifact retention cleanup", () => {
     });
     expect(getStoragePath(fixture.db, "scan-missing")).toBeNull();
   });
+
+  test("does not delete artifacts for queued scans", () => {
+    const fixture = createFixture();
+    const now = Date.now();
+    const queuedPath = path.join(fixture.artifactRoot, "scan-queued");
+    fs.mkdirSync(queuedPath, { recursive: true });
+    fs.writeFileSync(path.join(queuedPath, "payload.txt"), "queued");
+
+    insertScanRow({
+      db: fixture.db,
+      scanId: "scan-queued",
+      createdAtMs: now - 48 * 60 * 60 * 1000,
+      artifactStoragePath: queuedPath,
+      status: "queued"
+    });
+
+    const result = cleanupExpiredArtifacts({
+      db: fixture.db,
+      artifact_storage_dir: fixture.artifactRoot,
+      artifact_retention_hours: 24,
+      now_ms: now
+    });
+
+    expect(result.removed).toBe(0);
+    expect(fs.existsSync(queuedPath)).toBe(true);
+    expect(getStoragePath(fixture.db, "scan-queued")).toBe(queuedPath);
+  });
 });
 
 function createFixture(): Fixture {
@@ -109,7 +136,10 @@ function createFixture(): Fixture {
   fs.mkdirSync(artifactRoot, { recursive: true });
 
   const db = openDb(sqlitePath);
-  db.exec(fs.readFileSync(path.join(process.cwd(), "migrations", "001_init.sql"), "utf8"));
+  const migrationsDir = path.join(process.cwd(), "migrations");
+  for (const file of fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort()) {
+    db.exec(fs.readFileSync(path.join(migrationsDir, file), "utf8"));
+  }
 
   const fixture = { db, tmpDir, artifactRoot };
   fixtures.push(fixture);
@@ -121,6 +151,7 @@ function insertScanRow(args: {
   scanId: string;
   createdAtMs: number;
   artifactStoragePath: string;
+  status?: "queued" | "running" | "completed" | "failed";
 }): void {
   args.db
     .prepare(
@@ -132,7 +163,7 @@ function insertScanRow(args: {
     )
     .run({
       scan_id: args.scanId,
-      status: "completed",
+      status: args.status ?? "completed",
       created_at: args.createdAtMs,
       updated_at: args.createdAtMs,
       artifact_type: "inline",

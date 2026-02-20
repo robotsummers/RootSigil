@@ -41,10 +41,19 @@ describe("git intake", () => {
   test("requires a non-empty git ref", () => {
     expect(() =>
       normalizeGit({
-        repo_url: "https://example.com/repo.git",
+        repo_url: "https://github.com/example/repo.git",
         ref: "   "
       })
     ).toThrow(/ref/i);
+  });
+
+  test("rejects git hosts not present in allowlist", () => {
+    expect(() =>
+      normalizeGit({
+        repo_url: "https://example.com/repo.git",
+        ref: "main"
+      })
+    ).toThrow(/GIT_HOST_NOT_ALLOWED/i);
   });
 
   test("rejects git submodule entries (mode 160000)", () => {
@@ -57,7 +66,9 @@ describe("git intake", () => {
 
     const repoUrl = "https://example.com/submodule-fixture.git";
     useGitRewriteMap({ [repoUrl]: repoDir });
-    expect(() => normalizeGit({ repo_url: repoUrl, ref: "HEAD" })).toThrow(/submodule/i);
+    expect(() =>
+      normalizeGit({ repo_url: repoUrl, ref: "HEAD" }, undefined, { allowed_hosts: ["example.com"] })
+    ).toThrow(/submodule/i);
   });
 
   test("rejects git symlink entries (mode 120000)", () => {
@@ -68,7 +79,9 @@ describe("git intake", () => {
 
     const repoUrl = "https://example.com/symlink-fixture.git";
     useGitRewriteMap({ [repoUrl]: repoDir });
-    expect(() => normalizeGit({ repo_url: repoUrl, ref: "HEAD" })).toThrow(/symlink/i);
+    expect(() =>
+      normalizeGit({ repo_url: repoUrl, ref: "HEAD" }, undefined, { allowed_hosts: ["example.com"] })
+    ).toThrow(/symlink/i);
   });
 
   test("enforces git max_files limit", () => {
@@ -90,9 +103,34 @@ describe("git intake", () => {
           max_files: 2,
           max_total_bytes: 1024 * 1024,
           max_single_file_bytes: 1024 * 1024
+        },
+        {
+          allowed_hosts: ["example.com"]
         }
       )
     ).toThrow(/too many files/i);
+  });
+
+  test("returns GIT_TIMEOUT when git command exceeds timeout", () => {
+    const repoDir = createGitRepo({
+      "README.md": "fixture"
+    });
+    const repoUrl = "https://example.com/timeout-fixture.git";
+    useGitRewriteMap({ [repoUrl]: repoDir });
+
+    expect(() =>
+      normalizeGit(
+        {
+          repo_url: repoUrl,
+          ref: "HEAD"
+        },
+        undefined,
+        {
+          allowed_hosts: ["example.com"],
+          timeout_ms: 1
+        }
+      )
+    ).toThrow(/GIT_TIMEOUT/i);
   });
 });
 
