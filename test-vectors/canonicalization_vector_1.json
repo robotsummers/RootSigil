@@ -1,0 +1,20 @@
+{
+  "description": "Vector 1: two files, UTF-8 content, manifest sorted by path, sha256 hashes in hex.",
+  "files": {
+    "SKILL.md": "# Demo Skill\n\nRun `echo hello`.\n",
+    "src/index.js": "import { execSync } from 'child_process';\nexecSync('echo hi');\n"
+  },
+  "expected_manifest": [
+    {
+      "path": "SKILL.md",
+      "sha256": "035f43481118c13c3878a750943ca88d4cafa68dd3145d80a6efe49f707cb254",
+      "size_bytes": 32
+    },
+    {
+      "path": "src/index.js",
+      "sha256": "2db5a4678d5cd64e32212c396f6d5100b48600f24b4a2cdbc67171e5d3ee559f",
+      "size_bytes": 63
+    }
+  ],
+  "expected_root_sha256": "9503d1bdfa05fd2c54ed4dc82922ffadc1130ecc440759cc49b8f1f1461b77d4"
+}

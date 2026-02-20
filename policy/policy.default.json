@@ -1,0 +1,118 @@
+{
+  "policy_version": "2026-02-17.static.v1",
+  "verdict_thresholds": {
+    "fail_if_critical_greater_equal": 1,
+    "fail_if_high_greater_equal": 2,
+    "warn_if_high_greater_equal": 1,
+    "warn_if_medium_greater_equal": 3
+  },
+  "rules": {
+    "MD.REQUEST_SECRETS": {
+      "severity": "critical",
+      "category": "data-exfiltration",
+      "title": "Requests secrets from the operator",
+      "description": "The artifact asks for secrets (private keys, seed phrases, tokens, or environment variables)."
+    },
+    "MD.OVERRIDE_INSTRUCTIONS": {
+      "severity": "high",
+      "category": "prompt-injection",
+      "title": "Attempts to override higher-priority instructions",
+      "description": "The artifact includes instruction-override language (for example: ignore previous instructions)."
+    },
+    "MD.AUTO_APPROVE": {
+      "severity": "medium",
+      "category": "social-engineering",
+      "title": "Requests automatic approval",
+      "description": "The artifact asks the agent to always approve or to skip confirmations."
+    },
+
+    "CMD.PIPE_TO_SHELL": {
+      "severity": "high",
+      "category": "code-execution",
+      "title": "Pipes remote content directly to a shell",
+      "description": "The artifact contains a pattern like curl/wget piped directly into sh/bash."
+    },
+    "CMD.RM_RF": {
+      "severity": "high",
+      "category": "destructive",
+      "title": "Destructive filesystem removal",
+      "description": "The artifact contains rm -rf or equivalent destructive deletion."
+    },
+    "CMD.SUDO": {
+      "severity": "medium",
+      "category": "privilege",
+      "title": "Requests elevated privileges",
+      "description": "The artifact uses sudo, which may expand the blast radius."
+    },
+    "CMD.PERSISTENCE": {
+      "severity": "high",
+      "category": "persistence",
+      "title": "Persistence mechanism",
+      "description": "The artifact references cron/systemd/launchd/scheduled tasks/registry persistence mechanisms."
+    },
+
+    "JS.DYNAMIC_EVAL": {
+      "severity": "high",
+      "category": "code-execution",
+      "title": "Dynamic code evaluation",
+      "description": "The artifact uses eval-like JavaScript execution."
+    },
+    "JS.DYNAMIC_FUNCTION": {
+      "severity": "medium",
+      "category": "code-execution",
+      "title": "Dynamic function construction",
+      "description": "The artifact constructs code dynamically (for example: new Function)."
+    },
+    "JS.CHILD_PROCESS": {
+      "severity": "high",
+      "category": "process-spawn",
+      "title": "Spawns local processes",
+      "description": "The artifact uses Node process-spawning APIs (child_process, exec, spawn)."
+    },
+    "JS.NET_EGRESS": {
+      "severity": "medium",
+      "category": "network-egress",
+      "title": "Outbound network capability",
+      "description": "The artifact uses network primitives (fetch, axios, http/https.request, websockets)."
+    },
+
+    "PY.EVAL_EXEC": {
+      "severity": "high",
+      "category": "code-execution",
+      "title": "Dynamic code execution",
+      "description": "The artifact uses eval/exec in Python."
+    },
+    "PY.SUBPROCESS": {
+      "severity": "high",
+      "category": "process-spawn",
+      "title": "Spawns local processes",
+      "description": "The artifact uses subprocess or os.system in Python."
+    },
+    "PY.PICKLE": {
+      "severity": "high",
+      "category": "unsafe-deserialization",
+      "title": "Unsafe deserialization",
+      "description": "The artifact uses pickle.loads or similar unsafe deserialization."
+    },
+    "PY.NET_EGRESS": {
+      "severity": "medium",
+      "category": "network-egress",
+      "title": "Outbound network capability",
+      "description": "The artifact uses requests/socket or other outbound network libraries."
+    },
+
+    "DEP.NPM_INSTALL_SCRIPTS": {
+      "severity": "medium",
+      "category": "supply-chain",
+      "title": "NPM install lifecycle scripts",
+      "description": "The artifact defines npm install lifecycle scripts which may execute code during installation."
+    },
+
+    "LINK.SUSPICIOUS": {
+      "severity": "low",
+      "category": "network-egress",
+      "title": "Suspicious outbound link",
+      "description": "The artifact contains a suspicious outbound link (shorteners, paste sites, raw IPs)."
+    }
+  }
+}
