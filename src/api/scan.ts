@@ -6,14 +6,16 @@ import type { AppConfig } from "../config.js";
 import type { SqliteDb } from "../db/db.js";
 import {
   createScan,
-  failScan,
-  finishScan,
+  deleteFindingsForScan,
   getFindingsForScan,
   getScanById,
   getScanByIdAndToken,
   insertFindings,
+  markScanCompleted,
+  markScanFailed,
+  markScanRunning,
   sha256Hex,
-  updateScanStatus
+  nowMs
 } from "../db/repo.js";
 import { normalizeGit, normalizeInline, normalizeZip, persistArtifactToDisk, type IntakeLimits, type NormalizedArtifact } from "../lib/artifact.js";
 import type { Policy } from "../lib/policy.js";
@@ -122,7 +124,10 @@ export function buildScanRouter(args: {
           repo_url: parsed.data.git.repo_url,
           ref: parsed.data.git.ref,
           entrypoint: parsed.data.git.entrypoint
-        }, limits);
+        }, limits, {
+          allowed_hosts: config.GIT_ALLOWED_HOSTS ?? ["github.com"],
+          timeout_ms: config.GIT_TIMEOUT_MS ?? 15_000
+        });
         artifactType = "git";
         artifactSource = parsed.data.git.repo_url;
       } else {
@@ -150,64 +155,19 @@ export function buildScanRouter(args: {
       share_anonymized_artifact_for_research: Boolean(parsed.data.share_anonymized_artifact_for_research),
       error_code: null,
       error_message: null,
-      artifact_storage_path: artifactDir
+      artifact_storage_path: artifactDir,
+      lease_owner: null,
+      lease_expires_at: null,
+      attempt_count: 0,
+      next_attempt_at: null,
+      started_at: null,
+      completed_at: null
     });
 
     const totalBytes = artifact.files.reduce((s, f) => s + f.bytes.byteLength, 0);
-    const asyncMode = totalBytes > 2 * 1024 * 1024 || artifact.files.length > 500;
-
-    const run = () => {
-      try {
-        updateScanStatus(db, scan_id, "running");
-        const out = runScan(scan_id, artifact, policy);
-
-        for (const f of out.findings) {
-          for (const ev of f.evidence) ev.snippet = redactText(ev.snippet);
-        }
-
-        insertFindings(db, out.findings);
-        finishScan(db, scan_id, { verdict: out.verdict, score: out.score, finding_counts: out.counts });
-
-        const completedScan = getScanById(db, scan_id);
-        if (!completedScan || completedScan.score === null || !completedScan.finding_counts) {
-          throw new Error("scan row missing completed fields");
-        }
-
-        const responseBody = {
-          scan_id,
-          status: "completed",
-          created_at: toIso(completedScan.created_at),
-          updated_at: toIso(completedScan.updated_at),
-          policy_version: policyVersion,
-          artifact_root_sha256: artifact.root_sha256,
-          verdict: out.verdict,
-          score: out.score,
-          finding_counts: out.counts,
-          findings: out.findings.map((f) => ({
-            finding_id: f.finding_id,
-            severity: f.severity,
-            category: f.category,
-            title: f.title,
-            description: f.description,
-            evidence: f.evidence,
-            recommendations: f.recommendations,
-            fingerprints: f.fingerprints
-          }))
-        };
-
-        if (paymentId && !asyncMode) {
-          idem.put(paymentId, requestHash, 200, { "content-type": "application/json" }, { ...responseBody, result_token });
-        }
-
-        return responseBody;
-      } catch (e: any) {
-        failScan(db, scan_id, "SCAN_FAILED", String(e?.message || e));
-        return null;
-      }
-    };
+    const asyncMode = (config.SCAN_FORCE_ASYNC ?? false) || totalBytes > 2 * 1024 * 1024 || artifact.files.length > 500;
 
     if (asyncMode) {
-      setImmediate(run);
       const body = { scan_id, status: "queued", result_token };
       if (paymentId) {
         idem.put(paymentId, requestHash, 202, { "content-type": "application/json" }, body);
@@ -215,10 +175,66 @@ export function buildScanRouter(args: {
       return res.status(202).json(body);
     }
 
-    const body = run();
-    if (!body) return res.status(500).json({ error: { error_code: "SCAN_FAILED", message: "scan failed" } });
+    try {
+      markScanRunning(db, scan_id, {
+        worker_id: "api-sync",
+        now_ms: nowMs(),
+        lease_ms: config.WORKER_LEASE_MS ?? 120_000
+      });
+      const out = runScan(scan_id, artifact, policy);
+      for (const f of out.findings) {
+        for (const ev of f.evidence) {
+          ev.snippet = redactText(ev.snippet);
+        }
+      }
 
-    return res.status(200).json({ ...body, result_token });
+      deleteFindingsForScan(db, scan_id);
+      insertFindings(db, out.findings);
+      markScanCompleted(db, scan_id, {
+        now_ms: nowMs(),
+        verdict: out.verdict,
+        score: out.score,
+        finding_counts: out.counts
+      });
+
+      const completedScan = getScanById(db, scan_id);
+      if (!completedScan || completedScan.score === null || !completedScan.finding_counts) {
+        throw new Error("scan row missing completed fields");
+      }
+
+      const body = {
+        scan_id,
+        status: "completed",
+        created_at: toIso(completedScan.created_at),
+        updated_at: toIso(completedScan.updated_at),
+        policy_version: policyVersion,
+        artifact_root_sha256: artifact.root_sha256,
+        verdict: out.verdict,
+        score: out.score,
+        finding_counts: out.counts,
+        findings: out.findings.map((f) => ({
+          finding_id: f.finding_id,
+          severity: f.severity,
+          category: f.category,
+          title: f.title,
+          description: f.description,
+          evidence: f.evidence,
+          recommendations: f.recommendations,
+          fingerprints: f.fingerprints
+        })),
+        result_token
+      };
+
+      if (paymentId) {
+        idem.put(paymentId, requestHash, 200, { "content-type": "application/json" }, body);
+      }
+      return res.status(200).json(body);
+    } catch (e: any) {
+      markScanFailed(db, scan_id, "SCAN_FAILED", String(e?.message || e), {
+        now_ms: nowMs()
+      });
+      return res.status(500).json({ error: { error_code: "SCAN_FAILED", message: "scan failed" } });
+    }
   });
 
   router.get("/scan/:scan_id", (req, res) => {

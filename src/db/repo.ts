@@ -10,17 +10,43 @@ export function nowMs(): number {
   return Date.now();
 }
 
-export function createScan(db: SqliteDb, scan: Omit<Scan, "created_at" | "updated_at">): void {
+export type CreateScanInput = Omit<
+  Scan,
+  "created_at" | "updated_at" | "lease_owner" | "lease_expires_at" | "attempt_count" | "next_attempt_at" | "started_at" | "completed_at"
+> & {
+  lease_owner?: string | null;
+  lease_expires_at?: number | null;
+  attempt_count?: number;
+  next_attempt_at?: number | null;
+  started_at?: number | null;
+  completed_at?: number | null;
+};
+
+export function createScan(db: SqliteDb, scan: CreateScanInput): void {
   const t = nowMs();
   db.prepare(
-    `INSERT INTO scans (scan_id,status,created_at,updated_at,artifact_type,artifact_source,entrypoint,policy_version,artifact_root_sha256,manifest_json,verdict,score,finding_counts_json,result_token_sha256,share_anonymized_artifact_for_research,error_code,error_message,artifact_storage_path)
-     VALUES (@scan_id,@status,@created_at,@updated_at,@artifact_type,@artifact_source,@entrypoint,@policy_version,@artifact_root_sha256,@manifest_json,@verdict,@score,@finding_counts_json,@result_token_sha256,@share_anonymized_artifact_for_research,@error_code,@error_message,@artifact_storage_path)`
+    `INSERT INTO scans (
+      scan_id,status,created_at,updated_at,artifact_type,artifact_source,entrypoint,policy_version,artifact_root_sha256,manifest_json,
+      verdict,score,finding_counts_json,result_token_sha256,share_anonymized_artifact_for_research,error_code,error_message,artifact_storage_path,
+      lease_owner,lease_expires_at,attempt_count,next_attempt_at,started_at,completed_at
+    )
+    VALUES (
+      @scan_id,@status,@created_at,@updated_at,@artifact_type,@artifact_source,@entrypoint,@policy_version,@artifact_root_sha256,@manifest_json,
+      @verdict,@score,@finding_counts_json,@result_token_sha256,@share_anonymized_artifact_for_research,@error_code,@error_message,@artifact_storage_path,
+      @lease_owner,@lease_expires_at,@attempt_count,@next_attempt_at,@started_at,@completed_at
+    )`
   ).run({
     ...scan,
     created_at: t,
     updated_at: t,
     finding_counts_json: scan.finding_counts ? JSON.stringify(scan.finding_counts) : null,
-    share_anonymized_artifact_for_research: scan.share_anonymized_artifact_for_research ? 1 : 0
+    share_anonymized_artifact_for_research: scan.share_anonymized_artifact_for_research ? 1 : 0,
+    lease_owner: scan.lease_owner ?? null,
+    lease_expires_at: scan.lease_expires_at ?? null,
+    attempt_count: scan.attempt_count ?? 0,
+    next_attempt_at: scan.next_attempt_at ?? null,
+    started_at: scan.started_at ?? null,
+    completed_at: scan.completed_at ?? null
   });
 }
 
@@ -37,15 +63,180 @@ export function finishScan(
     finding_counts: Record<string, number>;
   }
 ): void {
-  db.prepare(
-    `UPDATE scans SET status='completed', updated_at=?, verdict=?, score=?, finding_counts_json=? WHERE scan_id=?`
-  ).run(nowMs(), result.verdict, result.score, JSON.stringify(result.finding_counts), scan_id);
+  markScanCompleted(db, scan_id, {
+    now_ms: nowMs(),
+    verdict: result.verdict,
+    score: result.score,
+    finding_counts: result.finding_counts
+  });
 }
 
 export function failScan(db: SqliteDb, scan_id: string, error_code: string, error_message: string): void {
+  markScanFailed(db, scan_id, error_code, error_message, { now_ms: nowMs() });
+}
+
+export function markScanRunning(
+  db: SqliteDb,
+  scan_id: string,
+  args: {
+    worker_id: string;
+    now_ms: number;
+    lease_ms: number;
+    increment_attempt_count?: boolean;
+  }
+): void {
+  const increment = args.increment_attempt_count ?? true;
   db.prepare(
-    `UPDATE scans SET status='failed', updated_at=?, error_code=?, error_message=? WHERE scan_id=?`
-  ).run(nowMs(), error_code, error_message, scan_id);
+    `UPDATE scans
+       SET status='running',
+           updated_at=?,
+           lease_owner=?,
+           lease_expires_at=?,
+           started_at=COALESCE(started_at, ?),
+           attempt_count=COALESCE(attempt_count, 0) + ?
+     WHERE scan_id=?`
+  ).run(args.now_ms, args.worker_id, args.now_ms + args.lease_ms, args.now_ms, increment ? 1 : 0, scan_id);
+}
+
+export function markScanCompleted(
+  db: SqliteDb,
+  scan_id: string,
+  args: {
+    now_ms: number;
+    verdict: Verdict;
+    score: number;
+    finding_counts: Record<string, number>;
+  }
+): void {
+  db.prepare(
+    `UPDATE scans
+       SET status='completed',
+           updated_at=?,
+           verdict=?,
+           score=?,
+           finding_counts_json=?,
+           lease_owner=NULL,
+           lease_expires_at=NULL,
+           next_attempt_at=NULL,
+           completed_at=?,
+           error_code=NULL,
+           error_message=NULL
+     WHERE scan_id=?`
+  ).run(args.now_ms, args.verdict, args.score, JSON.stringify(args.finding_counts), args.now_ms, scan_id);
+}
+
+export function markScanFailed(
+  db: SqliteDb,
+  scan_id: string,
+  error_code: string,
+  error_message: string,
+  args: {
+    now_ms: number;
+    next_attempt_at?: number | null;
+  }
+): void {
+  const retryAt = args.next_attempt_at ?? null;
+  if (retryAt !== null) {
+    db.prepare(
+      `UPDATE scans
+         SET status='queued',
+             updated_at=?,
+             error_code=?,
+             error_message=?,
+             lease_owner=NULL,
+             lease_expires_at=NULL,
+             next_attempt_at=?
+       WHERE scan_id=?`
+    ).run(args.now_ms, error_code, error_message, retryAt, scan_id);
+    return;
+  }
+
+  db.prepare(
+    `UPDATE scans
+       SET status='failed',
+           updated_at=?,
+           error_code=?,
+           error_message=?,
+           lease_owner=NULL,
+           lease_expires_at=NULL,
+           next_attempt_at=NULL,
+           completed_at=COALESCE(completed_at, ?)
+     WHERE scan_id=?`
+  ).run(args.now_ms, error_code, error_message, args.now_ms, scan_id);
+}
+
+export function claimNextScan(
+  db: SqliteDb,
+  args: {
+    worker_id: string;
+    now_ms: number;
+    lease_ms: number;
+  }
+): Scan | null {
+  const tx = db.transaction(() => {
+    const candidate = db
+      .prepare(
+        `SELECT scan_id
+           FROM scans
+          WHERE (
+            (status='queued' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+            OR
+            (status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+          )
+          ORDER BY created_at ASC
+          LIMIT 1`
+      )
+      .get(args.now_ms, args.now_ms) as any;
+    if (!candidate?.scan_id) return null;
+
+    const update = db
+      .prepare(
+        `UPDATE scans
+            SET status='running',
+                updated_at=?,
+                lease_owner=?,
+                lease_expires_at=?,
+                started_at=COALESCE(started_at, ?),
+                attempt_count=COALESCE(attempt_count, 0) + 1
+          WHERE scan_id=?
+            AND (
+              (status='queued' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+              OR
+              (status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+            )`
+      )
+      .run(
+        args.now_ms,
+        args.worker_id,
+        args.now_ms + args.lease_ms,
+        args.now_ms,
+        candidate.scan_id,
+        args.now_ms,
+        args.now_ms
+      );
+    if (update.changes === 0) return null;
+
+    const row = db.prepare(`SELECT * FROM scans WHERE scan_id=?`).get(candidate.scan_id) as any;
+    return row ? hydrateScan(row) : null;
+  });
+
+  return tx();
+}
+
+export function releaseExpiredLeases(db: SqliteDb, now_ms: number): number {
+  const result = db
+    .prepare(
+      `UPDATE scans
+          SET status='queued',
+              updated_at=?,
+              lease_owner=NULL,
+              lease_expires_at=NULL
+        WHERE status='running'
+          AND lease_expires_at IS NOT NULL
+          AND lease_expires_at <= ?`
+    )
+    .run(now_ms, now_ms);
+  return result.changes;
 }
 
 export function insertFindings(db: SqliteDb, findings: Finding[]): void {
@@ -64,6 +255,10 @@ export function insertFindings(db: SqliteDb, findings: Finding[]): void {
     }
   });
   tx(findings);
+}
+
+export function deleteFindingsForScan(db: SqliteDb, scan_id: string): void {
+  db.prepare(`DELETE FROM findings WHERE scan_id=?`).run(scan_id);
 }
 
 export function getScanById(db: SqliteDb, scan_id: string): Scan | null {
@@ -113,7 +308,13 @@ function hydrateScan(row: any): Scan {
     share_anonymized_artifact_for_research: Boolean(row.share_anonymized_artifact_for_research),
     error_code: row.error_code,
     error_message: row.error_message,
-    artifact_storage_path: row.artifact_storage_path
+    artifact_storage_path: row.artifact_storage_path,
+    lease_owner: row.lease_owner ?? null,
+    lease_expires_at: row.lease_expires_at ?? null,
+    attempt_count: row.attempt_count ?? 0,
+    next_attempt_at: row.next_attempt_at ?? null,
+    started_at: row.started_at ?? null,
+    completed_at: row.completed_at ?? null
   };
 }
 
@@ -247,7 +448,13 @@ export type ExpiredArtifactRow = {
 
 export function listExpiredArtifacts(db: SqliteDb, cutoff_created_at_ms: number): ExpiredArtifactRow[] {
   const rows = db
-    .prepare(`SELECT scan_id, artifact_storage_path FROM scans WHERE artifact_storage_path IS NOT NULL AND created_at <= ?`)
+    .prepare(
+      `SELECT scan_id, artifact_storage_path
+         FROM scans
+        WHERE artifact_storage_path IS NOT NULL
+          AND created_at <= ?
+          AND status IN ('completed', 'failed')`
+    )
     .all(cutoff_created_at_ms) as any[];
   return rows
     .filter((r) => typeof r.artifact_storage_path === "string" && r.artifact_storage_path.length > 0)

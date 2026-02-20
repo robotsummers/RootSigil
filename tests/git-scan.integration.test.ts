@@ -119,12 +119,17 @@ async function createFixture(args: { maxSingleFileBytes: number }): Promise<Fixt
     X402_FACILITATOR_URL: "https://x402.org/facilitator",
     X402_NETWORK: "eip155:84532",
     X402_PAYTO: "0x1111111111111111111111111111111111111111",
+    GIT_ALLOWED_HOSTS: ["example.com", "github.com"],
+    GIT_TIMEOUT_MS: 15_000,
     IDEMPOTENCY_TTL_MS: 60_000
   };
 
   fs.mkdirSync(config.ARTIFACT_STORAGE_DIR, { recursive: true });
   const db = openDb(config.SQLITE_PATH);
-  db.exec(fs.readFileSync(path.join(process.cwd(), "migrations", "001_init.sql"), "utf8"));
+  const migrationsDir = path.join(process.cwd(), "migrations");
+  for (const file of fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort()) {
+    db.exec(fs.readFileSync(path.join(migrationsDir, file), "utf8"));
+  }
   const policy = loadPolicyFromFile(config.POLICY_FILE);
 
   const noOpMiddleware: RequestHandler = (_req, _res, next) => next();

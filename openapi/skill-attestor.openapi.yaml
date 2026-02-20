@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Skill Attestor API
+  title: RootSigil API
   version: 0.1.0
   description: Scan skill bundles and issue signed attestations.
 servers:
@@ -150,6 +150,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RevocationsResponse'
+  /v1/issuer:
+    get:
+      summary: Get issuer metadata
+      responses:
+        '200':
+          description: Issuer metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuerResponse'
+  /v1/version:
+    get:
+      summary: Get service and policy version
+      responses:
+        '200':
+          description: Version metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
 components:
   responses:
     BadRequest:
@@ -371,6 +391,10 @@ components:
       properties:
         attestation_document: { type: object }
         signature_b64url: { type: string }
+        allow_unpinned_issuer:
+          type: boolean
+          default: false
+          description: Allow verification against issuer key embedded in attestation_document when it does not match pinned server issuer.
         artifact_manifest:
           description: Optional; if provided, recompute root hash.
           type: array
@@ -415,6 +439,31 @@ components:
         revocations_document: { type: object }
         signature_b64url: { type: string }
       required: [revocations_document, signature_b64url]
+
+    IssuerResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        issuer_id: { type: string }
+        issuer_public_key_b64: { type: string }
+        network: { type: string }
+        payto: { type: string }
+        prices:
+          type: object
+          additionalProperties: false
+          properties:
+            scan: { type: string }
+            attest: { type: string }
+          required: [scan, attest]
+      required: [issuer_id, issuer_public_key_b64, network, payto, prices]
+
+    VersionResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        version: { type: string }
+        policy_version: { type: string }
+      required: [version, policy_version]
 
     ErrorInfo:
       type: object

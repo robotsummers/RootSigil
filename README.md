@@ -2,6 +2,10 @@
 
 RootSigil scans artifacts against a versioned security policy and produces signed attestations that can be verified later.
 
+## Contract
+
+- OpenAPI contract: `openapi/skill-attestor.openapi.yaml`
+
 ## Core capabilities
 
 - Intake artifacts from:
@@ -16,13 +20,13 @@ RootSigil scans artifacts against a versioned security policy and produces signe
 
 ## API
 
-OpenAPI contract: `openapi/skill-attestor.openapi.yaml`
-
-- `POST /v1/scan` (x402-paid): create a scan (`200` sync result or `202` queued).
+- `POST /v1/scan` (x402-paid): create a scan (`202` queued when async mode is enabled).
 - `GET /v1/scan/{scan_id}?token=...`: fetch status/result via capability token.
 - `POST /v1/attest` (x402-paid): issue attestation for a completed scan.
 - `GET /v1/attest/{root_sha256}`: list attestations for an artifact root hash.
 - `POST /v1/verify`: verify signature/hash/revocation for an attestation.
+- `GET /v1/issuer`: discover issuer + payment metadata.
+- `GET /v1/version`: discover service and policy version.
 - `GET /v1/policies/{policy_version}`: fetch active policy metadata.
 - `GET /v1/revocations`: fetch signed revocation list.
 - `GET /openapi.json`: machine-readable OpenAPI.
@@ -57,6 +61,17 @@ Payment identifiers are idempotent:
 - same identifier + same request hash => replay cached response
 - same identifier + different request hash => `409 IDEMPOTENCY_CONFLICT`
 
+## Production (Base mainnet)
+
+RootSigil supports CDP-backed x402 settlement on Base mainnet:
+
+- network: `eip155:8453`
+- facilitator mode: `X402_FACILITATOR_MODE=cdp_mainnet`
+- required keys: `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`
+- production receiver: `0x4525d5E422dD75b8e062565EA28E9efe19eE5Dae`
+
+Use `docker-compose.prod.yml`, `Dockerfile`, and `Caddyfile` in this repo for Docker + Caddy deployment.
+
 ## Local development
 
 Prereqs:
@@ -76,6 +91,12 @@ Run:
 
 ```bash
 npm run dev
+```
+
+Production-like local stack:
+
+```bash
+docker compose -f docker-compose.prod.yml up --build
 ```
 
 Checks:

@@ -39,4 +39,10 @@ export interface Scan {
   error_code: string | null;
   error_message: string | null;
   artifact_storage_path: string | null;
+  lease_owner: string | null;
+  lease_expires_at: number | null;
+  attempt_count: number;
+  next_attempt_at: number | null;
+  started_at: number | null;
+  completed_at: number | null;
 }

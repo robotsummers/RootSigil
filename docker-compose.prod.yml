@@ -1,0 +1,80 @@
+services:
+  migrate:
+    build: .
+    env_file:
+      - .env
+    user: "0:0"
+    command:
+      [
+        "sh",
+        "-lc",
+        "mkdir -p /data /artifacts && chown -R 10001:10001 /data /artifacts && node scripts/migrate.mjs && chown -R 10001:10001 /data /artifacts",
+      ]
+    environment:
+      SQLITE_PATH: /data/rootsigil.sqlite
+      ARTIFACT_STORAGE_DIR: /artifacts
+    volumes:
+      - rootsigil-data:/data
+      - rootsigil-artifacts:/artifacts
+
+  api:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["node", "dist/index.js"]
+    environment:
+      ROOTSIGIL_ROLE: api
+      PORT: 8080
+      SQLITE_PATH: /data/rootsigil.sqlite
+      ARTIFACT_STORAGE_DIR: /artifacts
+      SCAN_FORCE_ASYNC: "true"
+      TRUST_PROXY: "true"
+    volumes:
+      - rootsigil-data:/data
+      - rootsigil-artifacts:/artifacts
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  worker:
+    build: .
+    env_file:
+      - .env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: ["node", "dist/index.js"]
+    environment:
+      ROOTSIGIL_ROLE: worker
+      SQLITE_PATH: /data/rootsigil.sqlite
+      ARTIFACT_STORAGE_DIR: /artifacts
+      SCAN_FORCE_ASYNC: "true"
+    volumes:
+      - rootsigil-data:/data
+      - rootsigil-artifacts:/artifacts
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - api
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  rootsigil-data:
+  rootsigil-artifacts:
+  caddy-data:
+  caddy-config:

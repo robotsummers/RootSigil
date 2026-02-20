@@ -1,0 +1,18 @@
+{
+  "name": "rootsigil-buyer-example",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Example x402 buyer client for RootSigil (testnet).",
+  "scripts": {
+    "scan:inline": "node index.mjs scan --inline ./sample/SKILL.md",
+    "scan:zip": "node index.mjs scan --zip ./sample/sample.zip",
+    "attest": "node index.mjs attest --scan-id REPLACE --token REPLACE"
+  },
+  "dependencies": {
+    "@x402/fetch": "^2.0.0",
+    "@x402/evm": "^2.0.0",
+    "dotenv": "^16.4.5",
+    "viem": "^2.21.0"
+  }
+}

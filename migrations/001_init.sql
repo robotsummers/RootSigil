@@ -1,5 +1,3 @@
-PRAGMA journal_mode=WAL;
-
 CREATE TABLE IF NOT EXISTS scans (
   scan_id TEXT PRIMARY KEY,
   status TEXT NOT NULL,

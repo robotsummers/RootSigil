@@ -118,6 +118,20 @@ describe("openapi conformance", () => {
     });
     expect(revocations.statusCode).toBe(200);
     assertConforms(revocations.body, getResponseSchema(doc, "/v1/revocations", "get", 200), doc);
+
+    const issuer = await jsonRequest(fixture.app, {
+      method: "GET",
+      url: "/v1/issuer"
+    });
+    expect(issuer.statusCode).toBe(200);
+    assertConforms(issuer.body, getResponseSchema(doc, "/v1/issuer", "get", 200), doc);
+
+    const version = await jsonRequest(fixture.app, {
+      method: "GET",
+      url: "/v1/version"
+    });
+    expect(version.statusCode).toBe(200);
+    assertConforms(version.body, getResponseSchema(doc, "/v1/version", "get", 200), doc);
   });
 });
 
@@ -287,7 +301,10 @@ async function createFixture(): Promise<Fixture> {
 
   fs.mkdirSync(config.ARTIFACT_STORAGE_DIR, { recursive: true });
   const db = openDb(config.SQLITE_PATH);
-  db.exec(fs.readFileSync(path.join(process.cwd(), "migrations", "001_init.sql"), "utf8"));
+  const migrationsDir = path.join(process.cwd(), "migrations");
+  for (const file of fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort()) {
+    db.exec(fs.readFileSync(path.join(migrationsDir, file), "utf8"));
+  }
   const policy = loadPolicyFromFile(config.POLICY_FILE);
 
   const noOpMiddleware: RequestHandler = (_req, _res, next) => next();
